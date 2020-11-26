@@ -1,0 +1,646 @@
+---
+title: "Assignment 4 - Heart rate, respiration and interpersonal coordination"
+author: "Kristian Severin, Lasse Hansen, Nikolaj Munch & Sarah Nielsen"
+date: "26/11/2020"
+output: html_document
+---
+
+
+# Assignment 4 - Heart rate, respiration and interpersonal coordination
+
+This assignment has two parts. The first part familiarizes you with heart rate, and respiration data and their preprocessing. The second part explores how to analyze interpersonal coordination of these signals.
+
+These are the questions you need to be able to answer at the end of the assignment (aka that you need to submit as part of the portfolio)
+
+1) How do you preprocess heart rate and respiration data? Describe the process. If any data needs to be excluded, list the excluded data and motivate the exclusion.
+
+2) Do you observe interpersonal coordination in heart rate and respiration? Describe your control baseline, the method used to quantify coordination, and the statistical models used to infer whether coordination was higher than in the baseline. Report the results of the models.
+
+3) Do you observe differences in coordination between conditions? Report the models and results.
+
+4) Is respiration coordination a likely driver of heart rate coordination? Describe how you would test for it. Bonus points if you actually run the tests and report methods and results.
+
+
+```{r load packages and data}
+
+# Load the libraries
+pacman::p_load(tidyverse, ggplot2, groupdata2, ggpubr, Hmisc, purrr, lmerTest)
+
+# Load the file
+st1g1t1_raw <- read_csv("/Users/shdn/OneDrive - Aarhus Universitet/3rd semester/EM3/A4/data/Study1_G1_T1_Synchronous.csv") %>% 
+  select(time, Resp1, Resp2, HR1, HR2) %>% 
+  rownames_to_column()
+```
+
+```{r Plotting raw data}
+
+resp1 <- st1g1t1_raw %>% ggplot() +
+  geom_path(aes(time, Resp1, color = "Participant 1")) +
+  geom_path(aes(time, Resp2, color = "Participant 2")) +
+  labs(x = "Time (in minutes)", y = "Respiration Signal") + theme_classic()
+
+HR1 <- st1g1t1_raw %>% ggplot() +
+  geom_path(aes(time, HR1, color = "Participant 1")) +
+  geom_path(aes(time, HR2, color = "Participant 2")) +
+  labs(x = "Time (in minutes)", y = "Heart Rate") + theme_classic()
+
+plot_raw <- ggarrange(resp1, HR1, nrow = 2)
+plot(plot_raw)
+```
+
+
+```{r Artefact removal function}
+
+removeOuts <- function(ts,threshold){
+  ts[ts > (mean(ts,na.rm=T) +
+             (threshold*sd(ts,na.rm=T))) | 
+       ts < (mean(ts,na.rm=T) -
+             (threshold*sd(ts,na.rm=T)))] = mean(ts,na.rm=T)
+  return(ts)
+}
+
+threshold=2.5 # Default value at 2.5 sds from the mean. But you can increase it, if you want.
+```
+
+```{r Artefact removal}
+
+st1_g1_NOA <- st1g1t1_raw %>% 
+  mutate(
+    Resp1 = removeOuts(st1g1t1_raw$Resp1, threshold),
+    Resp2 = removeOuts(st1g1t1_raw$Resp2, threshold),
+    HR1 = removeOuts(st1g1t1_raw$HR1, threshold),
+    HR2 = removeOuts(st1g1t1_raw$HR2, threshold)
+  )
+
+```
+
+
+```{r Plotting raw data against those with artefacts removed}
+
+# Plots without artefacts
+resp2 <- st1_g1_NOA %>% ggplot() +
+  geom_path(aes(time, Resp1, color = "Participant 1")) +
+  geom_path(aes(time, Resp2, color = "Participant 2")) +
+  labs(x = "Time (in minutes)", y = "Respiration Signal (without artefacts)") + theme_classic()
+
+HR2 <- st1_g1_NOA %>% ggplot() +
+  geom_path(aes(time, HR1, color = "Participant 1")) +
+  geom_path(aes(time, HR2, color = "Participant 2")) +
+  labs(x = "Time (in minutes)", y = "Heart Rate (without artefacts)") + theme_classic()
+
+# Plot raw data against those with the artifacts removed
+resp_comp <- ggarrange(resp1, resp2, nrow = 2)
+plot(resp_comp)
+
+HR_comp <- ggarrange(HR1, HR2, nrow = 2)
+plot(HR_comp)
+```
+
+
+```{r Scaling function}
+
+z_scale <- function(column){
+  column_c <- (column - mean(column)) / sd(column)
+}
+
+```
+
+```{r Scaling variables}
+
+st1_g1_s <- st1_g1_NOA %>% # Data without artefacts
+  mutate(
+    Resp1 = z_scale(st1_g1_NOA$Resp1),
+    Resp2_s = z_scale(st1_g1_NOA$Resp2),
+    HR1_s = z_scale(st1_g1_NOA$HR1),
+    HR2_s = z_scale(st1_g1_NOA$HR2)
+  )
+
+```
+
+```{r Plotting scaled data against those with artefacts removed}
+# Plot scaled data
+resp3 <- st1_g1_s %>% ggplot() +
+  geom_path(aes(time, Resp1, color = "Participant 1")) +
+  geom_path(aes(time, Resp2, color = "Participant 2")) +
+  labs(x = "Time (in minutes)", y = "Respiration Signal (scaled)") + theme_classic()
+
+HR3 <- st1_g1_s %>% ggplot() +
+  geom_path(aes(time, HR1, color = "Participant 1")) +
+  geom_path(aes(time, HR2, color = "Participant 2")) +
+  labs(x = "Time (in minutes)", y = "Heart Rate (scaled)") + theme_classic()
+
+# Plotting scaled data against non-scaled data (without artefacts)
+resp_comp2 <- ggarrange(resp2, resp3, nrow = 2)
+plot(resp_comp2)
+
+HR_comp2 <- ggarrange(HR2, HR3, nrow = 2)
+plot(HR_comp2)
+```
+
+```{r Downsampling}
+
+st1_g1_c <-  st1_g1_s %>%
+  groupdata2::group(n = 100, method = 'greedy') %>%
+  dplyr::summarise(
+    time = mean(time,na.rm=T),
+    HR1 = mean(HR1,na.rm=T),
+    HR2 = mean(HR2,na.rm=T),
+    Resp1 = mean(Resp1,na.rm=T),
+    Resp2 = mean(Resp2,na.rm=T),
+    rowname = rowname[1]) #the index we use to put them back together 
+```
+
+
+```{r Plotting downsampled data}
+
+resp4 <- st1_g1_c %>% ggplot() +
+  geom_path(aes(time, Resp1, color = "Participant 1")) +
+  geom_path(aes(time, Resp2, color = "Participant 2")) +
+  labs(x = "Time (in minutes)", y = "Respiration Signal (downsampled)") + theme_classic()
+plot(resp4)
+
+HR4 <- st1_g1_c %>% ggplot() +
+  geom_path(aes(time, HR1, color = "Participant 1")) +
+  geom_path(aes(time, HR2, color = "Participant 2")) +
+  labs(x = "Time (in minutes)", y = "Heart Rate (downsampled)") + theme_classic()
+plot(HR4)
+```
+
+
+```{r Adding study, group and trial}
+
+# Parse filename; study, group, trial
+file_name <- list.files(path= "/Users/shdn/OneDrive - Aarhus Universitet/3rd semester/EM3/A4/data/" , pattern="Study1_G1_T1_Synchronous.csv") #Specifying file list
+
+vars = str_match(file_name, "Study(\\d)_(\\w+)_(\\w+)_(\\w+)")
+vars = as.data.frame(t(vars[2:length(vars)]))
+names(vars) = c("study", "group", "trial", "condition")
+
+study1 <- cbind(st1_g1_c, vars) %>% 
+  select(study, group, trial, condition, time, HR1, HR2, Resp1, Resp2)
+```
+
+
+## Now we are ready to go to load and pre-process all files
+
+```{r Data preprocess function}
+data_preprocess <- function(filename, threshold){
+  d <- read_csv(paste0("/Users/lassehansen/Desktop/Lasse/Cognitive Science 3 Semester/ExpMeth 3/A4-Part1/data/", filename))
+  # Parse filename; study, group, trial
+  vars <-  str_match(filename, "Study(\\d)_G(\\d+)_T(\\d+)_(\\w+)")
+  vars <-  as.data.frame(vars)
+  names(vars) <- c("ID", "study", "group", "trial", "condition")
+  # Bind together
+  #d <- cbind(d, vars)
+  # Rename min column for study 4
+  if(vars[2] == 4) {
+    d <- d %>% rename(time=min)
+  }
+  # Convert from minutes to milliseconds
+  d <- d %>% 
+    mutate(time = time * 60000) %>%
+    select(time, Resp1, Resp2, HR1, HR2) %>% 
+    rownames_to_column()
+  # Remove artefacts
+  threshold = 2.5
+  d <- d %>%
+    mutate(
+      HR1 = removeOuts(HR1, threshold),
+      HR2 = removeOuts(HR2, threshold),
+      Resp1 = removeOuts(Resp1, threshold),
+      Resp2 = removeOuts(Resp2, threshold)
+      )
+  # Scaling variables (artefacts removed)
+  d <- d %>%
+    mutate(
+      HR1 = z_scale(HR1),        
+      HR2 = z_scale(HR2),
+      Resp1 = z_scale(Resp1),
+      Resp2 = z_scale(Resp2)
+      )
+  # Downsample
+  d <- d %>%
+    groupdata2::group(n = 100, method = 'greedy') %>%
+    dplyr::summarise(
+      time = mean(time,na.rm=T),
+      HR1 = mean(HR1,na.rm=T),
+      HR2 = mean(HR2,na.rm=T),
+      Resp1 = mean(Resp1,na.rm=T),
+      Resp2 = mean(Resp2,na.rm=T),
+      rowname = rowname[1]
+      )
+  # Bind together
+  d <- cbind(d, vars) %>% 
+    select(ID, study, group, trial, condition, time, HR1, HR2, Resp1, Resp2)
+}
+```
+
+```{r importing data + creating unique ID}
+setwd("/Users/lassehansen/Desktop/Lasse/Cognitive Science 3 Semester/ExpMeth 3/A4-Part1/data/")
+  
+#  Identify all files to be read and run the function on the whole dataset using map_df
+data = list.files(path = "/Users/lassehansen/Desktop/Lasse/Cognitive Science 3 Semester/ExpMeth 3/A4-Part1/data/", pattern = ".csv") %>%
+    purrr::map_df(data_preprocess)
+
+# Creating unique ID
+data$groupID <- as.integer(factor(with(data, paste(study, group))))
+```
+
+
+```{r Removing NAs}
+
+# Dataframe of all observations that contain NAs
+data2 <- data[!complete.cases(data), ]
+unique(data2$groupID) # ID 8
+unique(data2$trial) # trial 3
+
+# Removing ID 8's trial 3
+data3 <- data[complete.cases(data), ]
+
+data3 %>% filter(
+  groupID == 8 & trial == 3
+) # 0 rows
+```
+
+
+```{r Plotting HR signal for all trials in each group}
+plots_folder <- "/Users/shdn/OneDrive - Aarhus Universitet/3rd semester/EM3/A4/HR plots/"
+
+# Create graphing function
+HR_plots <- function(df, na.rm = TRUE, ...){
+  
+  # create list of ID in data to loop over 
+  ID_list <- unique(df$groupID)
+  
+  # create for loop to subset group ID
+  for (i in seq_along(ID_list)) { 
+    
+    subset_ID <- subset(df, df$groupID==ID_list[i])
+    
+    # create list of trials in data to loop over
+    trial_list = unique(subset_ID$trial)
+    
+    # create for loop to produce plot for each trial
+    for (j in seq_along(trial_list)) {
+      
+      # create plot for each trial in subset_ID 
+      plot <- 
+      ggplot(subset(subset_ID, subset_ID$trial==trial_list[j])) +
+      
+      geom_path(aes(time, HR1, color = "P1")) + 
+      
+      geom_path(aes(time, HR2, color = "P2")) +
+      
+      labs(x = "Time (in minutes)", y = "Heart Rate") + theme_bw()
+      
+      # save plots as .png
+      ggsave(plot, file=paste(plots_folder,
+                            "groupID",ID_list[i],"_trial",trial_list[j], ".png", sep=''), scale=2)
+      # print plots to screen
+      print(plot)
+    }
+  }
+}
+
+HR_plots(data3)
+```
+
+```{r Plotting respiration signal for all trials in each group}
+plots_folder2 <- "/Users/shdn/OneDrive - Aarhus Universitet/3rd semester/EM3/A4/Resp plots/"
+
+# Create graphing function
+Resp_plots <- function(df, na.rm = TRUE, ...){
+  
+  # create list of ID in data to loop over 
+  ID_list <- unique(df$groupID)
+  
+  # create for loop to subset group ID
+  for (i in seq_along(ID_list)) { 
+    
+    subset_ID <- subset(df, df$groupID==ID_list[i])
+    
+    # create list of trials in data to loop over
+    trial_list = unique(subset_ID$trial)
+    
+    # create for loop to produce plot for each trial
+    for (j in seq_along(trial_list)) {
+      
+      # create plot for each trial in subset_ID 
+      plot <- 
+      ggplot(subset(subset_ID, subset_ID$trial==trial_list[j])) +
+      
+      geom_path(aes(time, Resp1, color = "P1")) + 
+      
+      geom_path(aes(time, Resp2, color = "P2")) +
+      
+      labs(x = "Time (in minutes)", y = "Respiration signal") + theme_bw()
+      
+      # save plots as .png
+      ggsave(plot, file=paste(plots_folder2,
+                            "groupID",ID_list[i],"_trial",trial_list[j], ".png", sep=''), scale=2)
+      # print plots to screen
+      print(plot)
+    }
+  }
+}
+
+Resp_plots(data3)
+```
+
+```{r}
+# Save the data
+write.csv(data, "data.csv", row.names = F)
+```
+
+```{r}
+# Generate a column for each: next HR1, HR2, Resp1, Resp2.
+
+data4 <- data3 %>% 
+  mutate(
+    HR1_lead = lead(HR1),
+    HR2_lead = lead(HR2),
+    Resp1_lead = lead(Resp1),
+    Resp2_lead = lead(Resp2)
+  ) %>% 
+  subset(!is.na(time))
+  
+  
+# Generate a column for each: change in HR1, HR2, Resp1, Resp2
+
+data4 <- data4 %>% 
+  mutate(
+    HR1_change = HR1_lead - HR1,
+    HR2_change = HR2_lead - HR2,
+    Resp1_change = Resp1_lead - Resp1,
+    Resp2_change = Resp2_lead - Resp2
+  )
+```
+
+```{r Loading newest data again}
+data <- read.csv("data.csv")
+```
+
+```{r Removing artefacts by hand}
+data4$HR1 <- as.numeric(
+  ifelse(data4$groupID == 3 & data4$trial == 2, "NA",
+  ifelse(data4$groupID == 6 & (data4$trial == 1 | data4$trial == 2 | data4$trial == 3), "NA",
+  ifelse(data4$groupID == 7 & (data4$trial == 1 | data4$trial == 2 | data4$trial == 3), "NA",
+  ifelse(data4$groupID == 8 & data4$trial == 1, "NA",
+  ifelse(data4$groupID == 9 & (data4$trial == 1 | data4$trial == 2 | data4$trial == 3), "NA",
+  ifelse(data4$groupID == 19 & (data4$trial == 1 | data4$trial == 2), "NA",
+  ifelse(data4$groupID == 21 & (data4$trial == 4 | data4$trial == 5), "NA",
+  ifelse(data4$groupID == 22 & (data4$trial == 1 | data4$trial == 3 | data4$trial == 4), "NA",
+  ifelse(data4$groupID == 24 & data4$trial == 5, "NA",
+  ifelse(data4$groupID == 25 & (data4$trial == 1 | data4$trial == 2), "NA",
+  ifelse(data4$groupID == 26, "NA",
+  ifelse(data4$groupID == 27 & data4$trial == 4, "NA",
+  data4$HR1)))))))))))))
+
+data4$HR2 <- as.numeric(
+  ifelse(data4$groupID == 3 & data4$trial == 2, "NA",
+  ifelse(data4$groupID == 6 & (data4$trial == 1 | data4$trial == 2 | data4$trial == 3), "NA",
+  ifelse(data4$groupID == 7 & (data4$trial == 1 | data4$trial == 2 | data4$trial == 3), "NA",
+  ifelse(data4$groupID == 8 & data4$trial == 1, "NA",
+  ifelse(data4$groupID == 9 & (data4$trial == 1 | data4$trial == 2 | data4$trial == 3), "NA",
+  ifelse(data4$groupID == 19 & (data4$trial == 1 | data4$trial == 2), "NA",
+  ifelse(data4$groupID == 21 & (data4$trial == 4 | data4$trial == 5), "NA",
+  ifelse(data4$groupID == 22 & (data4$trial == 1 | data4$trial == 3 | data4$trial == 4), "NA",
+  ifelse(data4$groupID == 24 & data4$trial == 5, "NA",
+  ifelse(data4$groupID == 25 & (data4$trial == 1 | data4$trial == 2), "NA",
+  ifelse(data4$groupID == 26, "NA",
+  ifelse(data4$groupID == 27 & data4$trial == 4, "NA",
+  data4$HR2)))))))))))))
+```
+
+```{r Removing artefacts by hand}
+data4$Resp1 <- as.numeric(
+  ifelse(data4$groupID == 1 & (data4$trial == 1 | data4$trial == 2) , "NA",
+  ifelse(data4$groupID == 2 & (data4$trial == 1 | data4$trial == 2), "NA",
+  ifelse(data4$groupID == 19 & (data4$trial == 2 | data4$trial == 3), "NA",
+  ifelse(data4$groupID == 23 & (data4$trial == 1), "NA",
+  data4$Resp1)))))
+
+data4$Resp2 <- as.numeric(
+  ifelse(data4$groupID == 1 & (data4$trial == 1 | data4$trial == 2) , "NA",
+  ifelse(data4$groupID == 2 & (data4$trial == 1 | data4$trial == 2), "NA",
+  ifelse(data4$groupID == 19 & (data4$trial == 2 | data4$trial == 3), "NA",
+  ifelse(data4$groupID == 23 &(data4$trial == 1), "NA",
+  data4$Resp2)))))
+```
+
+```{r Loading data and removing Resp so we wont get NA's}
+data_forcomplete <- read.csv("datasd3_clean.csv")
+
+data_forcomplete$Resp1 <- NULL
+data_forcomplete$Resp2 <- NULL
+
+data_forcomplete1 <- data_forcomplete[complete.cases(data_forcomplete), ]
+data_forcomplete1 <- data_forcomplete1 %>% select(groupID, everything())
+data_forcomplete1$Shuffle_HR1 <- data_forcomplete1$HR1
+```
+
+```{r Loading data and removing HR so we wont get NA's}
+data_forcomplete_resp <- read.csv("datasd3_clean.csv")
+
+data_forcomplete_resp$HR1 <- NULL
+data_forcomplete_resp$HR2 <- NULL
+
+data_forcomplete_resp <- data_forcomplete_resp[complete.cases(data_forcomplete_resp), ]
+
+data_forcomplete_resp <- data_forcomplete_resp %>% select(groupID, everything())
+data_forcomplete_resp$Shuffle_Resp1 <- data_forcomplete_resp$Resp1
+```
+
+```{r Code for Resp}
+tidy_data_resp <- data_forcomplete_resp %>%
+    pivot_longer(
+      Resp1:Resp2,
+      names_to = c(".value", "Participant"),
+      names_pattern = "(Resp)(\\d)"
+    )
+
+colnames(tidy_data_resp)[8] <- "Resp_Self"
+
+tidy_data_resp <- tidy_data_resp %>% 
+    group_by(groupID, trial, time) %>% 
+    mutate(Resp_Other = ifelse(Participant == 1, Lag(Resp_Self, -1), Lag(Resp_Self, 1))
+           )
+```
+
+```{r Code for HR}
+tidy_data_hr <- data_forcomplete1 %>%
+    pivot_longer(
+      HR1:HR2,
+      names_to = c(".value", "Participant"),
+      names_pattern = "(HR)(\\d)"
+    )
+
+colnames(tidy_data_hr)[8] <- "HR_Self"
+
+tidy_data_hr <- tidy_data_hr %>% 
+    group_by(groupID, trial, time) %>% 
+    mutate(HR_Other = ifelse(Participant == 1, Lag(HR_Self, -1), Lag(HR_Self, 1))
+           )
+```
+
+```{r Creating HR model and shuffled HR model and comparing them}
+tidy_data_resp$Participant <- as.numeric(tidy_data_resp$Participant)
+
+tidy_data_resp1 <- tidy_data_resp %>% group_by(groupID, condition, Participant) %>% mutate(
+  Resp_SelfLead = Lag(Resp_Self, -1),
+  Resp_OtherLead = Lag(Resp_Other, -1),
+  Resp_ChangeSelf = Resp_SelfLead-Resp_Self,
+  Resp_ChangeOther = Resp_Other-Resp_Other,
+  Resp_OtherMinus_Self = Resp_Other-Resp_Self,
+  
+  SResp_Self = sample(Resp_Self), # randomly samples values from the column
+  SResp_Other = sample(Resp_Other),
+  SResp_SelfLead = Lag(SResp_Self, -1),
+  SResp_OtherLead = Lag(SResp_Other, -1),
+  SResp_ChangeSelf = SResp_SelfLead-SResp_Self,
+  SResp_ChangeOther = SResp_OtherLead-SResp_Other,
+  SResp_OtherMinus_Self = SResp_Other-SResp_Self
+  )
+ 
+
+tidy_data_resp1 <- tidy_data_resp1 %>% mutate(PartID = as.numeric(paste0(groupID, Participant)))
+
+Resp_model1 <- lmer(Resp_ChangeSelf ~ 0 + (Resp_Self + Resp_OtherMinus_Self): condition + (0 + condition | PartID) + (0 + condition | groupID),  subset(tidy_data_resp1, study=="1"), REML=F,control = lmerControl(optimizer = "nloptwrap", calc.derivs = FALSE))
+
+REsp_Model_Shuffle <- lmer(SResp_ChangeSelf ~ 0 + (SResp_Self + SResp_OtherMinus_Self): condition + (0 + condition | PartID) + (0 + condition | groupID),  subset(tidy_data_resp1, study=="1"), REML=F,control = lmerControl(optimizer = "nloptwrap", calc.derivs = FALSE))
+
+model_com_resp <- anova(REsp_Model_Shuffle, Resp_model1) #Model comparison 
+
+sjPlot::tab_model(Resp_model1, show.ngroups = F)
+
+sjPlot::tab_model(REsp_Model_Shuffle, show.ngroups = F)
+
+sjPlot::tab_model(model_com_resp)
+```
+
+```{r Creating HR model and shuffled HR model and comparing them}
+tidy_data_hr$Participant <- as.numeric(tidy_data_hr$Participant)
+
+tidy_data_hr_1 <- tidy_data_hr %>% group_by(groupID, condition, Participant) %>% mutate(
+  HR_SelfLead = Lag(HR_Self, -1),
+  HR_OtherLead = Lag(HR_Other, -1),
+  HR_ChangeSelf = HR_SelfLead-HR_Self,
+  HR_ChangeOther = HR_OtherLead-HR_Other,
+  HR_OtherMinus_Self = HR_Other-HR_Self, 
+  
+   SHR_Self = sample(HR_Self), # randomly samples values from the column
+   SHR_Other = sample(HR_Other),
+   SHR_SelfLead = Lag(SHR_Self, -1),
+   SHR_OtherLead = Lag(SHR_Other, -1),
+   SHR_ChangeSelf = SHR_SelfLead-HR_Self,
+   SHR_ChangeOther = SHR_OtherLead-HR_Other,
+   SHR_OtherMinus_Self = SHR_Other-SHR_Self
+  ) 
+
+tidy_data_hr_1 <- tidy_data_hr_1 %>% mutate(PartID = as.numeric(paste0(groupID, Participant)))
+
+
+tidy_data_hr_1$study <- as.numeric(tidy_data_hr_1$study)
+tidy_data_hr_1$PartID <- as.factor(tidy_data_hr_1$PartID )
+
+HR_Model1 <- lmer(HR_ChangeSelf ~ 0 + (HR_Self + HR_OtherMinus_Self): condition + (0 + condition | PartID) + (0 + condition | groupID),  subset(tidy_data_hr_1, study== 1 & study== 2), REML=F,control = lmerControl(optimizer = "nloptwrap", calc.derivs = FALSE))
+
+
+HR_Model_Shuffle <- lmer(SHR_ChangeSelf ~ 0 + (SHR_Self + SHR_OtherMinus_Self): condition + (0 + condition | PartID) + (0 + condition | groupID),  subset(tidy_data_hr_1, study=="1"), REML=F,control = lmerControl(optimizer = "nloptwrap", calc.derivs = FALSE))
+
+HR_ANOV <- anova(HR_Model_Shuffle, HR_Model1)
+
+sjPlot::tab_model(HR_Model1, show.ngroups = F)
+
+sjPlot::tab_model(HR_Model_Shuffle, show.ngroups = F)
+
+levels(tidy_data_hr_1$participantUNIQUE)
+
+summary(HR_Model1)
+
+pacman::p_load()
+
+  model_com_resp %>% 
+  kableExtra::kbl() %>%
+  kableExtra::kable_minimal()
+```
+
+```{r Creating surrogate pairs for HR and Resp asweel as models and model comparison}
+Surrogate_Resp <- data_forcomplete_resp %>% group_by(condition, study) %>% mutate(Shuffle_Resp2 = sample(Resp2)) #Shuffling HR2 and Resp2
+
+Surrogate_HR <- data_forcomplete1 %>% group_by(condition, study) %>% mutate(Shuffle_HR2 = sample(HR2)) #Shuffling HR2 and Resp2
+
+Surrogate_Resp <- Surrogate_Resp %>% select(groupID, everything())
+Surrogate_HR <- Surrogate_HR %>% select(groupID, everything())
+
+Surrogate_Resp <- Surrogate_Resp %>%
+    pivot_longer(
+      Resp1:Shuffle_Resp2,
+      names_to = c(".value", "Participant"),
+      names_pattern = "(Resp|Shuffle_Resp)(\\d)"
+    )
+
+Surrogate_HR <- Surrogate_HR %>%
+    pivot_longer(
+      HR1:Shuffle_HR2,
+      names_to = c(".value", "Participant"),
+      names_pattern = "(HR|Shuffle_HR)(\\d)"
+    )
+
+colnames(Surrogate_Resp)[8] <- "Resp_Self"
+colnames(Surrogate_HR)[8] <- "HR_Self"
+
+Surrogate_HR <- Surrogate_HR %>% 
+    group_by(groupID, trial, time) %>% 
+    mutate(HR_Other = ifelse(Participant == 1, Lag(HR_Self, -1), Lag(HR_Self, 1)),
+           HR_Shuffle_Other = ifelse(Participant == 1, Lag(Shuffle_HR, -1), Lag(Shuffle_HR, 1))
+           )
+
+Surrogate_Resp <- Surrogate_Resp %>% 
+    group_by(groupID, trial, time) %>% 
+    mutate(Resp_Other = ifelse(Participant == 1, Lag(Resp_Self, -1), Lag(Resp_Self, 1)),
+           Resp_Shuffle_Other = ifelse(Participant == 1, Lag(Shuffle_Resp, -1), Lag(Shuffle_Resp, 1))
+           )
+
+Surrogate_HR <- Surrogate_HR %>% group_by(groupID, condition, Participant) %>%
+  mutate(
+    HR_SelfLead = Lag(HR_Self, -1),
+    HR_OtherLead = Lag(HR_Other, -1),
+    HR_ChangeSelf = HR_SelfLead-HR_Self,
+    HR_ChangeOther = HR_OtherLead-HR_Other,
+    Shuffle_HR_SelfLead = Lag(Shuffle_HR, -1),
+    Shuffle_HR_OtherLead = Lag(HR_Shuffle_Other, -1),
+    HR_ChangeSelf = Shuffle_HR_SelfLead-Shuffle_HR,
+    HR_ChangeOther = Shuffle_HR_OtherLead-HR_Shuffle_Other,
+    HR_OtherMinus_Self = HR_Other-HR_Self,
+    Shuffle_HR_OtherMinus_Self = Shuffle_HR-HR_Shuffle_Other
+    )
+    
+    
+Surrogate_Resp <- Surrogate_Resp %>% group_by(groupID, condition, Participant) %>%
+  mutate(  
+    Resp_SelfLead = Lag(Resp_Self, -1),
+    Resp_OtherLead = Lag(Resp_Other, -1),    
+    Resp_ChangeSelf = Resp_SelfLead-Resp_Self,
+    Resp_OtherLead = Resp_OtherLead-Resp_Other,
+    Shuffle_Resp_SelfLead = Lag(Shuffle_Resp, -1),
+    Shuffle_Resp_OtherLead = Lag(Resp_Shuffle_Other, -1),
+    Resp_ChangeSelf = Shuffle_Resp_SelfLead-Shuffle_Resp,
+    Resp_ChangeOther = Shuffle_Resp_OtherLead-Resp_Shuffle_Other,
+    Resp_OtherMinus_Self = Resp_Other-Resp_Self,
+    Shuffle_Resp_OtherMinus_Self = Shuffle_Resp-Resp_Shuffle_Other
+    )
+
+
+Surrogate_HR <- Surrogate_HR %>% mutate(PartID = as.numeric(paste0(groupID, Participant)))
+Surrogate_Resp <- Surrogate_Resp %>% mutate(PartID = as.numeric(paste0(groupID, Participant)))
+
+Surrogate_HR <- lmer(HR_ChangeSelf ~ 0 + (HR_Self*Shuffle_HR + HR_OtherMinus_Self * Shuffle_HR_OtherMinus_Self):condition + (1 + condition |groupID), subset(Surrogate_HR, study == "1"), REML=F,control = lmerControl(optimizer = "nloptwrap", calc.derivs = FALSE))
+
+Surrogate_Resp <- lmer(Resp_ChangeSelf ~ 0 + (Resp_Self*Shuffle_Resp + Resp_OtherMinus_Self * Shuffle_Resp_OtherMinus_Self):condition + (1 + condition |groupID) + (1 + condition |PartID),  subset(Surrogate_Resp, study == "1"), REML=F,control = lmerControl(optimizer = "nloptwrap", calc.derivs = FALSE))
+
+```
+
+
+
+ 
